@@ -1,0 +1,13 @@
+**/PIC32BootloaderReflasher.X/.generated_files/
+**/PIC32BootloaderReflasher.X/build/
+**/PIC32BootloaderReflasher.X/dist/
+**/PIC32BootloaderReflasher.X/nbproject/Makefile-*
+**/PIC32BootloaderReflasher.X/nbproject/Package-*
+**/PIC32BootloaderReflasher.X/nbproject/private/
+**/PIC32BootloaderReflasher.X/*.bak*
+**/PIC32BootloaderReflasher.X/*.log
+**/PIC32BootloaderReflasher.X/*.log.*
+**/PIC32BootloaderReflasher.X/queuelogs
+**/list.lst
+src/config/default/.legato_generate_cache.zip
+desktop.ini
