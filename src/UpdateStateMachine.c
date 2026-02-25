@@ -10,15 +10,38 @@
 #include "definitions.h"
 #include "generated_bootloader_image.h"
 
-#define BOOTLOADER_START_ADDRESS         (0x9FC01000U)
-#define BOOTLOADER_MAX_SIZE_BYTES        (0x4000U)
+#define BOOTLOADER_START_ADDRESS         (0x9FC00000U)
+#define BOOTLOADER_MAX_SIZE_BYTES        (0x8000U)
 #define BOOTLOADER_MIN_SIZE_BYTES        (1024U)
+#define BOOTLOADER_VECTOR_REGION_BYTES   (0x1000U)
 #define BOOTLOADER_QUADWORD_SIZE_BYTES   (16U)
 #define BOOTLOADER_VERIFY_CHUNK_BYTES    (256U)
 #define APP_HEADER_CRC_ADDRESS           (0x9D0FFFF8U)
 #define CRC_INVALID_VALUE                (0x00000000U)
+#define CORE_TIMER_TICKS_PER_MS          (CPU_CLOCK_FREQUENCY / 2000U)
+
+#define LED_1_PIN                        GPIO_PIN_RF13
+#define LED_2_PIN                        GPIO_PIN_RC3
+#define LED_3_PIN                        GPIO_PIN_RC2
+
+#define MODBUS_FN_READ_HOLDING           (0x03U)
+#define MODBUS_CHECK_REGISTER            (0x0080U)
+#define MODBUS_CHECK_QUANTITY            (0x0001U)
+#define MODBUS_CHECK_REQ_SIZE            (8U)
+#define MODBUS_CHECK_RESP_SIZE           (7U)
+#define MODBUS_INTER_BYTE_TIMEOUT_MS     (5U)
+#define MODBUS_RESPONSE_VALUE            (0x0000U)
+
+#define ADD_1_Get()                      ((PORTJ >> 11) & 0x1U)
+#define ADD_2_Get()                      ((PORTH >> 8) & 0x1U)
+
+#define PRE_FLASH_BLINK_COUNT            (10U)
+#define PRE_FLASH_BLINK_MS               (200U)
+#define POST_FLASH_BLINK_COUNT           (20U)
+#define POST_FLASH_BLINK_MS              (100U)
 
 static bool g_reflashAttempted = false;
+static uint8_t g_displayAddress = 1U;
 
 int __pic32_software_reset(void);
 
@@ -31,27 +54,54 @@ static bool UPD_VerifyBootFlash(uint32_t address, const uint8_t *data, uint32_t 
 static bool UPD_InvalidateAppHeaderCrc(void);
 static uint32_t UPD_AlignDown(uint32_t value, uint32_t alignment);
 static uint32_t UPD_AlignUp(uint32_t value, uint32_t alignment);
+static void UPD_LedsInit(void);
+static void UPD_SetAllLeds(bool on);
+static void UPD_DelayMs(uint32_t delayMs);
+static void UPD_BlinkAllLeds(uint32_t blinkCount, uint32_t intervalMs);
+static void UPD_InitDisplayAddress(void);
+static void UPD_ServiceModbusCheckRequest(void);
+static bool UPD_TryReadModbusCheckRequest(uint8_t *request);
+static bool UPD_SendModbusCheckResponse(uint16_t value);
+static void UPD_ComputeModbusCrc(const uint8_t *data, uint32_t len, uint16_t *crc);
+static uint32_t UPD_GetElapsedMs(uint32_t startCount);
 
 void UPD_Init(void)
 {
+    UPD_LedsInit();
+    UPD_InitDisplayAddress();
+    uBUS_EN_Clear();
 }
 
 void UPD_CheckBootMode(void)
 {
     if (!g_reflashAttempted)
     {
+        bool reflashed = false;
+        bool crcInvalidated = false;
+
         g_reflashAttempted = true;
 
-        (void)UPD_ReflashBootloader();
-        (void)UPD_InvalidateAppHeaderCrc();
+        UPD_BlinkAllLeds(PRE_FLASH_BLINK_COUNT, PRE_FLASH_BLINK_MS);
 
-        __pic32_software_reset();
+        reflashed = UPD_ReflashBootloader();
+        if (reflashed)
+        {
+            crcInvalidated = UPD_InvalidateAppHeaderCrc();
+        }
+
+        if (reflashed && crcInvalidated)
+        {
+            UPD_BlinkAllLeds(POST_FLASH_BLINK_COUNT, POST_FLASH_BLINK_MS);
+            __pic32_software_reset();
+        }
     }
 }
 
 static bool UPD_ReflashBootloader(void)
 {
     uint32_t imageSize = (uint32_t)sizeof(g_bootloaderImage);
+
+    UPD_ServiceModbusCheckRequest();
 
     if (!UPD_IsBootloaderImageValid())
     {
@@ -75,10 +125,31 @@ static bool UPD_ReflashBootloader(void)
 
 static bool UPD_IsBootloaderImageValid(void)
 {
+    bool hasVectorData = false;
     bool hasProgramData = false;
     uint32_t imageSize = (uint32_t)sizeof(g_bootloaderImage);
 
     if ((imageSize < BOOTLOADER_MIN_SIZE_BYTES) || (imageSize > BOOTLOADER_MAX_SIZE_BYTES))
+    {
+        return false;
+    }
+
+    if (imageSize <= BOOTLOADER_VECTOR_REGION_BYTES)
+    {
+        return false;
+    }
+
+    // check the reset vectoor is actually there
+    for (uint32_t idx = 0U; idx < BOOTLOADER_VECTOR_REGION_BYTES; idx++)
+    {
+        if (g_bootloaderImage[idx] != 0xFFU)
+        {
+            hasVectorData = true;
+            break;
+        }
+    }
+
+    if (!hasVectorData)
     {
         return false;
     }
@@ -126,6 +197,8 @@ static bool UPD_EraseBootFlash(uint32_t address, uint32_t size)
 
         while (NVM_IsBusy())
         {
+            UPD_ServiceModbusCheckRequest();
+            WDT_Clear();
         }
 
         if (NVM_ErrorGet() != NVM_ERROR_NONE)
@@ -156,6 +229,8 @@ static bool UPD_WriteBootFlash(uint32_t address, const uint8_t *data, uint32_t s
 
         while (NVM_IsBusy())
         {
+            UPD_ServiceModbusCheckRequest();
+            WDT_Clear();
         }
 
         if (NVM_ErrorGet() != NVM_ERROR_NONE)
@@ -209,6 +284,8 @@ static bool UPD_InvalidateAppHeaderCrc(void)
 
     while (NVM_IsBusy())
     {
+        UPD_ServiceModbusCheckRequest();
+        WDT_Clear();
     }
 
     if (NVM_ErrorGet() != NVM_ERROR_NONE)
@@ -232,4 +309,210 @@ static uint32_t UPD_AlignDown(uint32_t value, uint32_t alignment)
 static uint32_t UPD_AlignUp(uint32_t value, uint32_t alignment)
 {
     return ((value + alignment - 1U) & ~(alignment - 1U));
+}
+
+static void UPD_LedsInit(void)
+{
+    GPIO_PinOutputEnable(LED_1_PIN);
+    GPIO_PinOutputEnable(LED_2_PIN);
+    GPIO_PinOutputEnable(LED_3_PIN);
+    UPD_SetAllLeds(false);
+}
+
+static void UPD_SetAllLeds(bool on)
+{
+    if (on)
+    {
+        GPIO_PinSet(LED_1_PIN);
+        GPIO_PinSet(LED_2_PIN);
+        GPIO_PinSet(LED_3_PIN);
+    }
+    else
+    {
+        GPIO_PinClear(LED_1_PIN);
+        GPIO_PinClear(LED_2_PIN);
+        GPIO_PinClear(LED_3_PIN);
+    }
+}
+
+static void UPD_DelayMs(uint32_t delayMs)
+{
+    uint32_t ticks = delayMs * CORE_TIMER_TICKS_PER_MS;
+    uint32_t start = _CP0_GET_COUNT();
+
+    while ((uint32_t)(_CP0_GET_COUNT() - start) < ticks)
+    {
+        UPD_ServiceModbusCheckRequest();
+        WDT_Clear();
+    }
+}
+
+static void UPD_BlinkAllLeds(uint32_t blinkCount, uint32_t intervalMs)
+{
+    for (uint32_t i = 0U; i < blinkCount; i++)
+    {
+        UPD_SetAllLeds(true);
+        UPD_DelayMs(intervalMs);
+        UPD_SetAllLeds(false);
+        UPD_DelayMs(intervalMs);
+    }
+}
+
+static void UPD_InitDisplayAddress(void)
+{
+    if (!ADD_1_Get() && !ADD_2_Get())
+    {
+        g_displayAddress = 2U;
+    }
+    else if (!ADD_1_Get() && ADD_2_Get())
+    {
+        g_displayAddress = 3U;
+    }
+    else if (ADD_1_Get() && ADD_2_Get())
+    {
+        g_displayAddress = 4U;
+    }
+    else
+    {
+        g_displayAddress = 1U;
+    }
+}
+
+static void UPD_ServiceModbusCheckRequest(void)
+{
+    uint8_t request[MODBUS_CHECK_REQ_SIZE] = {0};
+    uint16_t crc = 0U;
+    uint16_t requestCrc = 0U;
+
+    if ((U2STA & _U2STA_OERR_MASK) != 0U)
+    {
+        U2STACLR = _U2STA_OERR_MASK;
+    }
+
+    if (!UPD_TryReadModbusCheckRequest(request))
+    {
+        return;
+    }
+
+    UPD_ComputeModbusCrc(request, MODBUS_CHECK_REQ_SIZE - 2U, &crc);
+    requestCrc = ((uint16_t)request[MODBUS_CHECK_REQ_SIZE - 1U] << 8) | request[MODBUS_CHECK_REQ_SIZE - 2U];
+
+    if (crc != requestCrc)
+    {
+        return;
+    }
+
+    if ((request[0] != g_displayAddress) ||
+        (request[1] != MODBUS_FN_READ_HOLDING) ||
+        (request[2] != (uint8_t)(MODBUS_CHECK_REGISTER >> 8)) ||
+        (request[3] != (uint8_t)(MODBUS_CHECK_REGISTER & 0xFFU)) ||
+        (request[4] != (uint8_t)(MODBUS_CHECK_QUANTITY >> 8)) ||
+        (request[5] != (uint8_t)(MODBUS_CHECK_QUANTITY & 0xFFU)))
+    {
+        return;
+    }
+
+    (void)UPD_SendModbusCheckResponse(MODBUS_RESPONSE_VALUE);
+}
+
+static bool UPD_TryReadModbusCheckRequest(uint8_t *request)
+{
+    if (request == NULL)
+    {
+        return false;
+    }
+
+    if ((U2STA & _U2STA_URXDA_MASK) == 0U)
+    {
+        return false;
+    }
+
+    for (uint32_t i = 0U; i < MODBUS_CHECK_REQ_SIZE; i++)
+    {
+        uint32_t startCount = _CP0_GET_COUNT();
+
+        while ((U2STA & _U2STA_URXDA_MASK) == 0U)
+        {
+            if (UPD_GetElapsedMs(startCount) >= MODBUS_INTER_BYTE_TIMEOUT_MS)
+            {
+                return false;
+            }
+            WDT_Clear();
+        }
+
+        request[i] = (uint8_t)U2RXREG;
+    }
+
+    return true;
+}
+
+static bool UPD_SendModbusCheckResponse(uint16_t value)
+{
+    uint8_t response[MODBUS_CHECK_RESP_SIZE] = {0};
+    uint16_t crc = 0U;
+
+    response[0] = g_displayAddress;
+    response[1] = MODBUS_FN_READ_HOLDING;
+    response[2] = 0x02U;
+    response[3] = (uint8_t)(value >> 8);
+    response[4] = (uint8_t)(value & 0xFFU);
+
+    UPD_ComputeModbusCrc(response, MODBUS_CHECK_RESP_SIZE - 2U, &crc);
+    response[5] = (uint8_t)(crc & 0xFFU);
+    response[6] = (uint8_t)(crc >> 8);
+
+    uBUS_EN_Set();
+
+    if (!UART2_Write(response, MODBUS_CHECK_RESP_SIZE))
+    {
+        uBUS_EN_Clear();
+        return false;
+    }
+
+    while (UART2_WriteIsBusy())
+    {
+        WDT_Clear();
+    }
+
+    while (!UART2_TransmitComplete())
+    {
+        WDT_Clear();
+    }
+
+    uBUS_EN_Clear();
+    return true;
+}
+
+static void UPD_ComputeModbusCrc(const uint8_t *data, uint32_t len, uint16_t *crc)
+{
+    if ((data == NULL) || (crc == NULL))
+    {
+        return;
+    }
+
+    *crc = 0xFFFFU;
+
+    for (uint32_t pos = 0U; pos < len; pos++)
+    {
+        *crc ^= (uint16_t)data[pos];
+
+        for (uint8_t bit = 0U; bit < 8U; bit++)
+        {
+            if ((*crc & 0x0001U) != 0U)
+            {
+                *crc >>= 1U;
+                *crc ^= 0xA001U;
+            }
+            else
+            {
+                *crc >>= 1U;
+            }
+        }
+    }
+}
+
+static uint32_t UPD_GetElapsedMs(uint32_t startCount)
+{
+    uint32_t elapsedTicks = (uint32_t)(_CP0_GET_COUNT() - startCount);
+    return (elapsedTicks / CORE_TIMER_TICKS_PER_MS);
 }

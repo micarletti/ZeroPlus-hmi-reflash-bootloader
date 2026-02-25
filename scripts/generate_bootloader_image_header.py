@@ -249,12 +249,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--flash-start",
-        default="0x9FC01000",
+        default="0x9FC00000",
         help="Bootloader flash start address",
     )
     parser.add_argument(
         "--max-size",
-        default="0x4000",
+        default="0x8000",
         help="Maximum image size in bytes",
     )
 
