@@ -80,13 +80,26 @@ def build_release_payload(internal_data: bytes, version: int) -> bytes:
     total_chunk_n = (total_len // CHUNK_SIZE) + 1
     total_crc = compute_crc(padded)
 
-    # Match legacy v2.11 layout exactly:
-    # len(4), version(2), chunk(2), crc(2), reserved[1014]=0x00.
+    # Build a header compatible with both:
+    # - legacy bootloader: len(4), version(2), chunk(2), crc(2)
+    # - newer bootloader: adds int_chunk/int_crc/ext_chunk/ext_crc in reserved area
+    #
+    # For this reflasher payload there is only internal data:
+    # int_chunk == total_chunk_n, int_crc == total_crc, ext_chunk == 0.
+    int_chunk = total_chunk_n
+    int_crc = total_crc
+    ext_chunk = 0
+    ext_crc = 0
+
     header = bytearray()
     header.extend(total_len.to_bytes(4, byteorder="little"))
     header.extend(version.to_bytes(2, byteorder="little"))
     header.extend(total_chunk_n.to_bytes(2, byteorder="little"))
     header.extend(total_crc.to_bytes(2, byteorder="little"))
+    header.extend(int_chunk.to_bytes(2, byteorder="little"))
+    header.extend(int_crc.to_bytes(2, byteorder="little"))
+    header.extend(ext_chunk.to_bytes(2, byteorder="little"))
+    header.extend(ext_crc.to_bytes(2, byteorder="little"))
     header.extend(bytes(CHUNK_SIZE - len(header)))
 
     if len(header) != CHUNK_SIZE:
