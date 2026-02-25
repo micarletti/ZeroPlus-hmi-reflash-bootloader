@@ -11,3 +11,5 @@
 **/list.lst
 src/config/default/.legato_generate_cache.zip
 desktop.ini
+Release
+__pycache__

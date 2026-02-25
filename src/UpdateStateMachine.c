@@ -8,6 +8,7 @@
 #include <string.h>
 #include "UpdateStateMachine.h"
 #include "definitions.h"
+#include "generated_bootloader_image.h"
 
 #define BOOTLOADER_START_ADDRESS         (0x9FC01000U)
 #define BOOTLOADER_MAX_SIZE_BYTES        (0x4000U)
@@ -16,12 +17,6 @@
 #define BOOTLOADER_VERIFY_CHUNK_BYTES    (256U)
 #define APP_HEADER_CRC_ADDRESS           (0x9D0FFFF8U)
 #define CRC_INVALID_VALUE                (0x00000000U)
-
-static const uint8_t g_bootloaderImage[] =
-{
-    /* Replace this template array with the real bootloader image bytes. */
-    0xFF, 0xFF, 0xFF, 0xFF
-};
 
 static bool g_reflashAttempted = false;
 
