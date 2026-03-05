@@ -24,9 +24,24 @@
 
 #include <stddef.h>      // Defines NULL
 #include <stdbool.h>     // Defines true
+#include <stdint.h>
 #include <stdlib.h>      // Defines EXIT_FAILURE
 #include "definitions.h" // SYS function prototypes
 #include "UpdateStateMachine.h"
+
+#define APP_START_GUARD_DELAY_MS    (5U)
+#define CORE_TIMER_TICKS_PER_MS     (CPU_CLOCK_FREQUENCY / 2000U)
+
+static void APP_StartGuardDelay(void)
+{
+    const uint32_t ticks = APP_START_GUARD_DELAY_MS * CORE_TIMER_TICKS_PER_MS;
+    const uint32_t start = _CP0_GET_COUNT();
+
+    while ((uint32_t)(_CP0_GET_COUNT() - start) < ticks)
+    {
+        /* allow EOF ACK from old bootloader to finish before UART re-init */
+    }
+}
 
 // *****************************************************************************
 // *****************************************************************************
@@ -36,6 +51,8 @@
 
 int main(void)
 {
+    APP_StartGuardDelay();
+
     /* Initialize all modules */
     SYS_Initialize(NULL);
 
